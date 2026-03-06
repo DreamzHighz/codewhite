@@ -427,9 +427,6 @@ class App(tk.Tk):
             command=self._clear_pg_search,
         ).pack(side="left", padx=4)
 
-        # Results
-        self._pg_tree = make_scrollable_treeview(tab)
-
     # ── Excel Tab ─────────────────────────────────────────────
 
     def _build_excel_tab(self, nb):
@@ -527,9 +524,6 @@ class App(tk.Tk):
             command=self._clear_xls_search,
         ).pack(side="left", padx=4)
 
-        # Results
-        self._xls_tree = make_scrollable_treeview(tab)
-
     # ── PostgreSQL logic ──────────────────────────────────────
 
     def _fetch_pg_thread(self):
@@ -552,8 +546,7 @@ class App(tk.Tk):
             cached_data = self.cache_manager.get_cached_data(query, connection_info)
             if cached_data:
                 self._pg_all_rows = cached_data
-                self.after(0, lambda: populate_tree(
-                    self._pg_tree, cached_data, self._pg_status, self._pg_count))
+                self._pg_count.set(f"พบข้อมูล {len(cached_data)} รายการ")
                 self._pg_status.set("จาก Cache ✔")
                 self._update_cache_info()
                 return
@@ -594,8 +587,10 @@ class App(tk.Tk):
             self.cache_manager.cache_data(query, connection_info, rows)
 
             self._pg_all_rows = rows
-            self.after(0, lambda: populate_tree(
-                self._pg_tree, rows, self._pg_status, self._pg_count))
+            self.after(0, lambda: (
+                self._pg_count.set(f"พบข้อมูล {len(rows)} รายการ"),
+                self._pg_status.set("สำเร็จ ✔"),
+            ))
             
             self._update_cache_info()
 
@@ -806,8 +801,10 @@ class App(tk.Tk):
                 rows.append((name, usage, price))
 
             self._xls_all_rows = rows
-            self.after(0, lambda: populate_tree(
-                self._xls_tree, rows, self._xls_status, self._xls_count))
+            self.after(0, lambda: (
+                self._xls_count.set(f"พบข้อมูล {len(rows)} รายการ"),
+                self._xls_status.set("สำเร็จ ✔"),
+            ))
 
         except Exception as exc:
             self._xls_status.set("ผิดพลาด ✘")
@@ -822,11 +819,13 @@ class App(tk.Tk):
             [r for r in self._pg_all_rows if keyword in " ".join(str(v) for v in r).lower()]
             if keyword else self._pg_all_rows
         )
-        populate_tree(self._pg_tree, filtered, self._pg_status, self._pg_count)
+        self._pg_count.set(f"พบข้อมูล {len(filtered)} รายการ")
+        self._pg_status.set("สำเร็จ ✔")
 
     def _clear_pg_search(self):
         self._pg_search_var.set("")
-        populate_tree(self._pg_tree, self._pg_all_rows, self._pg_status, self._pg_count)
+        self._pg_count.set(f"พบข้อมูล {len(self._pg_all_rows)} รายการ")
+        self._pg_status.set("สำเร็จ ✔")
 
     def _search_xls(self):
         keyword = self._xls_search_var.get().strip().lower()
@@ -834,11 +833,13 @@ class App(tk.Tk):
             [r for r in self._xls_all_rows if keyword in " ".join(str(v) for v in r).lower()]
             if keyword else self._xls_all_rows
         )
-        populate_tree(self._xls_tree, filtered, self._xls_status, self._xls_count)
+        self._xls_count.set(f"พบข้อมูล {len(filtered)} รายการ")
+        self._xls_status.set("สำเร็จ ✔")
 
     def _clear_xls_search(self):
         self._xls_search_var.set("")
-        populate_tree(self._xls_tree, self._xls_all_rows, self._xls_status, self._xls_count)
+        self._xls_count.set(f"พบข้อมูล {len(self._xls_all_rows)} รายการ")
+        self._xls_status.set("สำเร็จ ✔")
 
 
 # ── entry point ──────────────────────────────────────────────
