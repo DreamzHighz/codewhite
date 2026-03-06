@@ -11,8 +11,8 @@ DB_DEFAULTS = {
     "host":     "172.16.16.1",
     "port":     "5434",
     "database": "imed_mfu",
-    "username": "codewhite",
-    "password": "MCH41509chaokuy",
+    "username": "postgres",
+    "password": "imedostmfu2018",
 }
 
 COLUMNS = ("ชื่อรายการ", "วิธีการใช้", "ราคา")
@@ -184,12 +184,13 @@ class App(tk.Tk):
         self._pg_query.pack(fill="x", padx=8, pady=6)
         self._pg_query.insert(
             "1.0",
-            "SELECT item_name AS \"ชื่อรายการ\",\n"
-            "       usage_method AS \"วิธีการใช้\",\n"
-            "       price AS \"ราคา\"\n"
-            "FROM   items\n"
-            "ORDER  BY item_name\n"
-            "LIMIT  500;",
+            "SELECT item.common_name AS \"ชื่อรายการ\",\n"
+            "       base_drug_instruction.description_th AS \"วิธีการใช้\",\n"
+            "       get_last_item_price(item_price.item_id::VARCHAR, item_price.base_tariff_id::VARCHAR) AS \"ราคา\"\n"
+            "FROM item\n"
+            "LEFT JOIN base_drug_instruction ON item.base_drug_instruction_id = base_drug_instruction.base_drug_instruction_id\n"
+            "LEFT JOIN item_price ON item.item_id = item_price.item_id\n"
+            "WHERE item.fix_item_type_id = '0';",
         )
 
         # Button row
