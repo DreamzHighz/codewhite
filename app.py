@@ -2,6 +2,9 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
 import os
+import sqlite3
+import datetime
+import json
 
 # ============================================================
 #  ระบบดึงข้อมูลรายการ  (PostgreSQL + Excel)
@@ -22,6 +25,162 @@ COL_WIDTHS = {
     "วิธีการใช้": 300,
     "ราคา":      120,
 }
+
+# Cache settings
+CACHE_DB_NAME = "item_cache.db"
+DEFAULT_CACHE_MINUTES = 30  # Cache expiry time in minutes
+
+# ─── Cache Manager ─────────────────────────────────────────
+
+class CacheManager:
+    def __init__(self, db_name=CACHE_DB_NAME):
+        self.db_name = db_name
+        self.init_db()
+    
+    def init_db(self):
+        """Initialize cache database"""
+        try:
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+            
+            # Create cache table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS cache_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query_hash TEXT UNIQUE,
+                    query_text TEXT,
+                    data TEXT,
+                    created_at DATETIME,
+                    expires_at DATETIME
+                )
+            ''')
+            
+            # Create cache settings table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS cache_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            ''')
+            
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error initializing cache database: {e}")
+    
+    def get_cache_expiry_minutes(self):
+        """Get cache expiry time from settings"""
+        try:
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+            cursor.execute('SELECT value FROM cache_settings WHERE key = ?', ('cache_minutes',))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                return int(result[0])
+            else:
+                # Set default value
+                self.set_cache_expiry_minutes(DEFAULT_CACHE_MINUTES)
+                return DEFAULT_CACHE_MINUTES
+        except Exception:
+            return DEFAULT_CACHE_MINUTES
+    
+    def set_cache_expiry_minutes(self, minutes):
+        """Set cache expiry time"""
+        try:
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+            cursor.execute('INSERT OR REPLACE INTO cache_settings (key, value) VALUES (?, ?)', 
+                          ('cache_minutes', str(minutes)))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error setting cache expiry: {e}")
+    
+    def get_query_hash(self, query, connection_info):
+        """Generate hash for query and connection"""
+        import hashlib
+        combined = f"{query}_{connection_info}"
+        return hashlib.md5(combined.encode()).hexdigest()
+    
+    def get_cached_data(self, query, connection_info):
+        """Get cached data if still valid"""
+        try:
+            query_hash = self.get_query_hash(query, connection_info)
+            
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT data, expires_at FROM cache_data 
+                WHERE query_hash = ? AND expires_at > datetime('now')
+            ''', (query_hash,))
+            
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                return json.loads(result[0])
+            return None
+        except Exception as e:
+            print(f"Error getting cached data: {e}")
+            return None
+    
+    def cache_data(self, query, connection_info, data):
+        """Cache query results"""
+        try:
+            query_hash = self.get_query_hash(query, connection_info)
+            cache_minutes = self.get_cache_expiry_minutes()
+            
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+            
+            now = datetime.datetime.now()
+            expires_at = now + datetime.timedelta(minutes=cache_minutes)
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO cache_data 
+                (query_hash, query_text, data, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (query_hash, query, json.dumps(data), now, expires_at))
+            
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error caching data: {e}")
+    
+    def clear_cache(self):
+        """Clear all cached data"""
+        try:
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM cache_data')
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Error clearing cache: {e}")
+            return False
+
+    def get_cache_info(self):
+        """Get cache statistics"""
+        try:
+            conn = sqlite3.connect(self.db_name)
+            cursor = conn.cursor()
+            
+            # Count total cached queries
+            cursor.execute('SELECT COUNT(*) FROM cache_data')
+            total = cursor.fetchone()[0]
+            
+            # Count valid (non-expired) queries  
+            cursor.execute("SELECT COUNT(*) FROM cache_data WHERE expires_at > datetime('now')")
+            valid = cursor.fetchone()[0]
+            
+            conn.close()
+            return {'total': total, 'valid': valid}
+        except Exception as e:
+            print(f"Error getting cache info: {e}")
+            return {'total': 0, 'valid': 0}
 
 # ─── helpers ────────────────────────────────────────────────
 
@@ -100,6 +259,9 @@ class App(tk.Tk):
         self.geometry("1100x720")
         self.configure(bg="#e8f0fe")
         self.resizable(True, True)
+
+        # Initialize cache manager
+        self.cache_manager = CacheManager()
 
         self._build_ui()
 
@@ -216,10 +378,35 @@ class App(tk.Tk):
             command=self._show_tables,
         ).pack(side="left", padx=8)
 
+        tk.Button(
+            btn_row, text="  🔄  รีเฟรช Cache",
+            font=("Tahoma", 10),
+            bg="#e67e22", fg="white", activebackground="#d35400",
+            relief="flat", padx=12, pady=5, cursor="hand2",
+            command=self._refresh_cache,
+        ).pack(side="left", padx=8)
+
+        tk.Button(
+            btn_row, text="  ⚙️  ตั้งค่า Cache",
+            font=("Tahoma", 9),
+            bg="#8e44ad", fg="white", activebackground="#7d3c98",
+            relief="flat", padx=10, pady=5, cursor="hand2",
+            command=self._show_cache_settings,
+        ).pack(side="left", padx=4)
+
         tk.Label(btn_row, textvariable=self._pg_status, font=("Tahoma", 10),
                  bg="#f0f4f8", fg="#27ae60").pack(side="left", padx=10)
         tk.Label(btn_row, textvariable=self._pg_count, font=("Tahoma", 10),
                  bg="#f0f4f8", fg="#7f8c8d").pack(side="right", padx=10)
+
+        # Cache info
+        self._pg_cache_info = tk.StringVar(value="")
+        cache_info_frame = tk.Frame(tab, bg="#f0f4f8")
+        cache_info_frame.pack(fill="x", padx=12, pady=(2, 4))
+        tk.Label(cache_info_frame, textvariable=self._pg_cache_info, 
+                 font=("Tahoma", 8), bg="#f0f4f8", fg="#7f8c8d").pack(side="left")
+
+        self._update_cache_info()
 
         # Results
         self._pg_tree = make_scrollable_treeview(tab)
@@ -308,7 +495,25 @@ class App(tk.Tk):
         t = threading.Thread(target=self._fetch_pg, daemon=True)
         t.start()
 
-    def _fetch_pg(self):
+    def _fetch_pg(self, force_refresh=False):
+        query = self._pg_query.get("1.0", "end").strip()
+        if not query:
+            self._pg_status.set("กรุณาใส่ SQL Query")
+            return
+
+        # Create connection info string
+        connection_info = f"{self._pg_vars['host'].get()}:{self._pg_vars['port'].get()}/{self._pg_vars['database'].get()}/{self._pg_vars['username'].get()}"
+        
+        # Check cache first (unless force refresh)
+        if not force_refresh:
+            cached_data = self.cache_manager.get_cached_data(query, connection_info)
+            if cached_data:
+                self.after(0, lambda: populate_tree(
+                    self._pg_tree, cached_data, self._pg_status, self._pg_count))
+                self._pg_status.set("จาก Cache ✔")
+                self._update_cache_info()
+                return
+
         if not try_import("psycopg2"):
             messagebox.showerror(
                 "ไม่พบ Library",
@@ -319,6 +524,8 @@ class App(tk.Tk):
         import psycopg2
 
         try:
+            self._pg_status.set("กำลังดึงข้อมูลจาก PostgreSQL…")
+            
             conn = psycopg2.connect(
                 host=self._pg_vars["host"].get(),
                 port=int(self._pg_vars["port"].get()),
@@ -328,7 +535,6 @@ class App(tk.Tk):
                 connect_timeout=10,
             )
             cur = conn.cursor()
-            query = self._pg_query.get("1.0", "end").strip()
             cur.execute(query)
             col_names = [desc[0] for desc in cur.description]
             raw_rows  = cur.fetchall()
@@ -340,12 +546,102 @@ class App(tk.Tk):
                 r = list(row) + ["", "", ""]
                 rows.append((str(r[0] or ""), str(r[1] or ""), str(r[2] or "")))
 
+            # Cache the results
+            self.cache_manager.cache_data(query, connection_info, rows)
+
             self.after(0, lambda: populate_tree(
                 self._pg_tree, rows, self._pg_status, self._pg_count))
+            
+            self._update_cache_info()
 
         except Exception as exc:
             self._pg_status.set("ผิดพลาด ✘")
-            self.after(0, lambda: messagebox.showerror("ข้อผิดพลาด", str(exc)))
+            self.after(0, lambda exc=exc: messagebox.showerror("ข้อผิดพลาด", str(exc)))
+
+    def _refresh_cache(self):
+        """Force refresh data from PostgreSQL (bypass cache)"""
+        t = threading.Thread(target=lambda: self._fetch_pg(force_refresh=True), daemon=True)
+        t.start()
+
+    def _update_cache_info(self):
+        """Update cache info display"""
+        try:
+            cache_info = self.cache_manager.get_cache_info()
+            cache_minutes = self.cache_manager.get_cache_expiry_minutes()
+            info_text = f"Cache: {cache_info['valid']}/{cache_info['total']} queries (หมดอายุใน {cache_minutes} นาที)"
+            self._pg_cache_info.set(info_text)
+        except Exception as e:
+            self._pg_cache_info.set("Cache: Error")
+
+    def _show_cache_settings(self):
+        """Show cache settings dialog"""
+        dialog = tk.Toplevel(self)
+        dialog.title("ตั้งค่า Cache")
+        dialog.geometry("400x300")
+        dialog.configure(bg="#f0f4f8")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # Center the dialog
+        dialog.geometry("+%d+%d" % (self.winfo_rootx() + 350, self.winfo_rooty() + 200))
+
+        main_frame = tk.Frame(dialog, bg="#f0f4f8")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Cache expiry setting
+        tk.Label(main_frame, text="เวลาหมดอายุของ Cache (นาที):", 
+                 font=("Tahoma", 10, "bold"), bg="#f0f4f8", fg="#2c3e50").pack(anchor="w")
+        
+        expire_var = tk.StringVar(value=str(self.cache_manager.get_cache_expiry_minutes()))
+        expire_entry = ttk.Entry(main_frame, textvariable=expire_var, width=10)
+        expire_entry.pack(anchor="w", pady=(5, 15))
+
+        # Cache info
+        info_frame = tk.LabelFrame(main_frame, text="สถานะ Cache", 
+                                   font=("Tahoma", 10, "bold"), bg="#f0f4f8", fg="#2c3e50")
+        info_frame.pack(fill="x", pady=(0, 15))
+
+        cache_info = self.cache_manager.get_cache_info()
+        tk.Label(info_frame, text=f"จำนวน Query ที่ Cache: {cache_info['total']}", 
+                 font=("Tahoma", 9), bg="#f0f4f8").pack(anchor="w", padx=10, pady=2)
+        tk.Label(info_frame, text=f"จำนวน Query ที่ยังไม่หมดอายุ: {cache_info['valid']}", 
+                 font=("Tahoma", 9), bg="#f0f4f8").pack(anchor="w", padx=10, pady=2)
+
+        # Buttons
+        button_frame = tk.Frame(main_frame, bg="#f0f4f8")
+        button_frame.pack(fill="x", pady=10)
+
+        def save_settings():
+            try:
+                minutes = int(expire_var.get())
+                if minutes < 1:
+                    messagebox.showwarning("คำเตือน", "เวลาหมดอายุต้องมากกว่า 0 นาที")
+                    return
+                self.cache_manager.set_cache_expiry_minutes(minutes)
+                self._update_cache_info()
+                messagebox.showinfo("สำเร็จ", "บันทึกการตั้งค่าแล้ว")
+                dialog.destroy()
+            except ValueError:
+                messagebox.showerror("ข้อผิดพลาด", "กรุณาใส่ตัวเลขที่ถูกต้อง")
+
+        def clear_cache():
+            if messagebox.askyesno("ยืนยัน", "ต้องการลบ Cache ทั้งหมดหรือไม่?"):
+                if self.cache_manager.clear_cache():
+                    messagebox.showinfo("สำเร็จ", "ลบ Cache แล้ว")
+                    self._update_cache_info()
+                    dialog.destroy()
+                else:
+                    messagebox.showerror("ข้อผิดพลาด", "ไม่สามารถลบ Cache ได้")
+
+        tk.Button(button_frame, text="บันทึก", font=("Tahoma", 10, "bold"),
+                  bg="#2c6fad", fg="white", padx=20, pady=5, command=save_settings).pack(side="left")
+        
+        tk.Button(button_frame, text="ลบ Cache ทั้งหมด", font=("Tahoma", 10),
+                  bg="#e74c3c", fg="white", padx=15, pady=5, command=clear_cache).pack(side="left", padx=10)
+        
+        tk.Button(button_frame, text="ยกเลิก", font=("Tahoma", 10),
+                  bg="#95a5a6", fg="white", padx=20, pady=5, command=dialog.destroy).pack(side="right")
 
     def _show_tables(self):
         self._pg_status.set("กำลังดึงรายชื่อตาราง…")
@@ -382,7 +678,7 @@ class App(tk.Tk):
                 "รายชื่อตาราง", f"พบ {len(tables)} ตาราง:\n\n{table_list}"))
         except Exception as exc:
             self._pg_status.set("ผิดพลาด ✘")
-            self.after(0, lambda: messagebox.showerror("ข้อผิดพลาด", str(exc)))
+            self.after(0, lambda exc=exc: messagebox.showerror("ข้อผิดพลาด", str(exc)))
 
     # ── Excel logic ───────────────────────────────────────────
 
@@ -469,7 +765,7 @@ class App(tk.Tk):
 
         except Exception as exc:
             self._xls_status.set("ผิดพลาด ✘")
-            self.after(0, lambda: messagebox.showerror("ข้อผิดพลาด", str(exc)))
+            self.after(0, lambda exc=exc: messagebox.showerror("ข้อผิดพลาด", str(exc)))
 
 
 # ── entry point ──────────────────────────────────────────────
