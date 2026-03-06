@@ -263,6 +263,9 @@ class App(tk.Tk):
         # Initialize cache manager
         self.cache_manager = CacheManager()
 
+        self._pg_all_rows  = []
+        self._xls_all_rows = []
+
         self._build_ui()
 
     # ── UI shell ─────────────────────────────────────────────
@@ -371,14 +374,6 @@ class App(tk.Tk):
         ).pack(side="left")
 
         tk.Button(
-            btn_row, text="  📋  แสดงตาราง (Show Tables)",
-            font=("Tahoma", 10),
-            bg="#27ae60", fg="white", activebackground="#1e8449",
-            relief="flat", padx=12, pady=5, cursor="hand2",
-            command=self._show_tables,
-        ).pack(side="left", padx=8)
-
-        tk.Button(
             btn_row, text="  🔄  รีเฟรช Cache",
             font=("Tahoma", 10),
             bg="#e67e22", fg="white", activebackground="#d35400",
@@ -407,6 +402,30 @@ class App(tk.Tk):
                  font=("Tahoma", 8), bg="#f0f4f8", fg="#7f8c8d").pack(side="left")
 
         self._update_cache_info()
+
+        # Search row
+        search_row = tk.Frame(tab, bg="#f0f4f8")
+        search_row.pack(fill="x", padx=12, pady=(4, 2))
+        tk.Label(search_row, text="ค้นหา:", font=("Tahoma", 10, "bold"),
+                 bg="#f0f4f8", fg="#2c3e50").pack(side="left")
+        self._pg_search_var = tk.StringVar()
+        pg_search_entry = ttk.Entry(search_row, textvariable=self._pg_search_var, width=40)
+        pg_search_entry.pack(side="left", padx=(6, 4))
+        pg_search_entry.bind("<Return>", lambda e: self._search_pg())
+        tk.Button(
+            search_row, text="  🔍  ค้นหา",
+            font=("Tahoma", 10),
+            bg="#2c6fad", fg="white", activebackground="#1a5276",
+            relief="flat", padx=10, pady=4, cursor="hand2",
+            command=self._search_pg,
+        ).pack(side="left")
+        tk.Button(
+            search_row, text="  ✖  ล้าง",
+            font=("Tahoma", 10),
+            bg="#95a5a6", fg="white", activebackground="#7f8c8d",
+            relief="flat", padx=10, pady=4, cursor="hand2",
+            command=self._clear_pg_search,
+        ).pack(side="left", padx=4)
 
         # Results
         self._pg_tree = make_scrollable_treeview(tab)
@@ -484,6 +503,30 @@ class App(tk.Tk):
         tk.Label(btn_row, textvariable=self._xls_count, font=("Tahoma", 10),
                  bg="#f0f4f8", fg="#7f8c8d").pack(side="right", padx=10)
 
+        # Search row
+        xls_search_row = tk.Frame(tab, bg="#f0f4f8")
+        xls_search_row.pack(fill="x", padx=12, pady=(4, 2))
+        tk.Label(xls_search_row, text="ค้นหา:", font=("Tahoma", 10, "bold"),
+                 bg="#f0f4f8", fg="#2c3e50").pack(side="left")
+        self._xls_search_var = tk.StringVar()
+        xls_search_entry = ttk.Entry(xls_search_row, textvariable=self._xls_search_var, width=40)
+        xls_search_entry.pack(side="left", padx=(6, 4))
+        xls_search_entry.bind("<Return>", lambda e: self._search_xls())
+        tk.Button(
+            xls_search_row, text="  🔍  ค้นหา",
+            font=("Tahoma", 10),
+            bg="#2c6fad", fg="white", activebackground="#1a5276",
+            relief="flat", padx=10, pady=4, cursor="hand2",
+            command=self._search_xls,
+        ).pack(side="left")
+        tk.Button(
+            xls_search_row, text="  ✖  ล้าง",
+            font=("Tahoma", 10),
+            bg="#95a5a6", fg="white", activebackground="#7f8c8d",
+            relief="flat", padx=10, pady=4, cursor="hand2",
+            command=self._clear_xls_search,
+        ).pack(side="left", padx=4)
+
         # Results
         self._xls_tree = make_scrollable_treeview(tab)
 
@@ -508,6 +551,7 @@ class App(tk.Tk):
         if not force_refresh:
             cached_data = self.cache_manager.get_cached_data(query, connection_info)
             if cached_data:
+                self._pg_all_rows = cached_data
                 self.after(0, lambda: populate_tree(
                     self._pg_tree, cached_data, self._pg_status, self._pg_count))
                 self._pg_status.set("จาก Cache ✔")
@@ -549,6 +593,7 @@ class App(tk.Tk):
             # Cache the results
             self.cache_manager.cache_data(query, connection_info, rows)
 
+            self._pg_all_rows = rows
             self.after(0, lambda: populate_tree(
                 self._pg_tree, rows, self._pg_status, self._pg_count))
             
@@ -760,12 +805,40 @@ class App(tk.Tk):
                 price = row.get(price_col, "") if price_col else ""
                 rows.append((name, usage, price))
 
+            self._xls_all_rows = rows
             self.after(0, lambda: populate_tree(
                 self._xls_tree, rows, self._xls_status, self._xls_count))
 
         except Exception as exc:
             self._xls_status.set("ผิดพลาด ✘")
             self.after(0, lambda exc=exc: messagebox.showerror("ข้อผิดพลาด", str(exc)))
+
+
+    # ── Search helpers ─────────────────────────────────────────
+
+    def _search_pg(self):
+        keyword = self._pg_search_var.get().strip().lower()
+        filtered = (
+            [r for r in self._pg_all_rows if keyword in " ".join(str(v) for v in r).lower()]
+            if keyword else self._pg_all_rows
+        )
+        populate_tree(self._pg_tree, filtered, self._pg_status, self._pg_count)
+
+    def _clear_pg_search(self):
+        self._pg_search_var.set("")
+        populate_tree(self._pg_tree, self._pg_all_rows, self._pg_status, self._pg_count)
+
+    def _search_xls(self):
+        keyword = self._xls_search_var.get().strip().lower()
+        filtered = (
+            [r for r in self._xls_all_rows if keyword in " ".join(str(v) for v in r).lower()]
+            if keyword else self._xls_all_rows
+        )
+        populate_tree(self._xls_tree, filtered, self._xls_status, self._xls_count)
+
+    def _clear_xls_search(self):
+        self._xls_search_var.set("")
+        populate_tree(self._xls_tree, self._xls_all_rows, self._xls_status, self._xls_count)
 
 
 # ── entry point ──────────────────────────────────────────────
